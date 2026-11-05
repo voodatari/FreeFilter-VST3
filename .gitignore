@@ -1,0 +1,10 @@
+build/
+dist/
+cmake-build-*/
+.vs/
+.idea/
+*.user
+.DS_Store
+# El plugin original NO se versiona (software comercial de terceros)
+*.dll
+decomp/

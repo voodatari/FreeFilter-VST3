@@ -1,0 +1,109 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-dsp:
+    name: Tests del DSP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compilar y ejecutar
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra tests/dsp_test.cpp -o dsp_test
+          ./dsp_test
+
+  build:
+    name: ${{ matrix.name }}
+    needs: test-dsp
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            id: windows-x64
+            cmake_args: ""
+          - name: macOS arm64 (Apple Silicon)
+            os: macos-latest
+            id: macos-arm64
+            cmake_args: -DCMAKE_OSX_ARCHITECTURES=arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.id }}
+          max-size: 500M
+
+      - name: Instalar Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configurar
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          ${{ matrix.cmake_args }}
+
+      - name: Compilar
+        run: cmake --build build --parallel
+
+      - name: Firmar (ad-hoc) y empaquetar - macOS
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          OUT=build/FreeFilter_artefacts/Release
+          mkdir -p dist
+          for b in "$OUT/VST3/FreeFilter.vst3" "$OUT/AU/FreeFilter.component" "$OUT/Standalone/FreeFilter.app"; do
+            codesign --force --deep --sign - "$b"
+            codesign --verify --deep --strict "$b"
+          done
+          lipo -archs "$OUT/VST3/FreeFilter.vst3/Contents/MacOS/FreeFilter"
+          ditto -c -k --keepParent "$OUT/VST3/FreeFilter.vst3"       "dist/FreeFilter-VST3-${{ matrix.id }}.zip"
+          ditto -c -k --keepParent "$OUT/AU/FreeFilter.component"    "dist/FreeFilter-AU-${{ matrix.id }}.zip"
+          ditto -c -k --keepParent "$OUT/Standalone/FreeFilter.app"  "dist/FreeFilter-Standalone-${{ matrix.id }}.zip"
+
+      - name: Empaquetar - Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = "build/FreeFilter_artefacts/Release"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "$out/VST3/FreeFilter.vst3"       -DestinationPath "dist/FreeFilter-VST3-${{ matrix.id }}.zip"
+          Compress-Archive -Path "$out/Standalone/FreeFilter.exe"  -DestinationPath "dist/FreeFilter-Standalone-${{ matrix.id }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FreeFilter-${{ matrix.id }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publicar release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          draft: true
