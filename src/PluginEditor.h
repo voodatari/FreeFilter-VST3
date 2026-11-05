@@ -58,7 +58,6 @@ private:
     std::array<float, kFftSize * 2> fftBuf {};
     std::array<float, kFftSize> sampBuf {};
     std::array<float, kFftSize / 2> specIn {}, specOut {};
-    std::array<float, ff::kTaps> tapsCopy {};
 
     juce::Image background;
     bool showAbout = false;
@@ -72,6 +71,12 @@ private:
 
     juce::Point<float> hover { -1.0f, -1.0f };
     juce::String readHz, readDb;
+    juce::String statusText;
+    juce::int64 statusUntil = 0;
+    void setStatus (const juce::String& s);
+    bool morphDragging = false;
+    void setMorphFromX (float x);
+    juce::String idleStatus() const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FreeFilterEditor)
 };

@@ -5,18 +5,21 @@ Reimplementación en JUCE 8 del ecualizador de filtro libre **ME FreeFilter** (S
 con GitHub Actions.
 
 El filtro se dedujo analizando el plugin original y está contrastado contra él (ver
-[docs/ANALISIS.md](docs/ANALISIS.md)).
+[docs/ANALISIS.md](docs/ANALISIS.md), con lo verificado y lo no verificado).
 
 ## Qué hace
 
-* **30 bandas** de ±15 dB distribuidas linealmente hasta Nyquist, interpoladas en dB y realizadas como
-  FIR lineal de 257 taps (latencia 128 muestras, que el plugin comunica al host).
-* **Analizador de espectro** de entrada (verde), salida (rojo) y curva del filtro (amarillo), con eje Lin/Log.
-* Modos de dibujo: libre, nivel y recta. Doble clic en un slider lo pone a 0 dB. **Reset** pone todo a 0.
-* **Freeze** congela el analizador.
+* **30 bandas** de ±15 dB, interpoladas en dB y realizadas como FIR lineal.
+  * **Lin** (bandas iguales): bandas lineales hasta Nyquist, FIR de 257 taps, latencia 128 muestras.
+  * **Log** (tercios de octava): 25 Hz … 20 kHz, FIR de 8193 taps por convolución, latencia 4096 muestras.
+    La latencia se comunica al host.
+* **Learn / Match / Morph:** elige **Source** o **Dest.**, activa **Learn** y reproduce el material; al terminar,
+  aprende el otro lado. Con ambos aprendidos, **Match** aplica `Morph · (Dest/Source)` en dB (Morph de 0 a 200 %)
+  más los sliders, que en Match son un juego independiente.
+* **Analizador de espectro** de entrada (verde), salida (rojo) y curva del filtro (amarillo).
+* Modos de dibujo: libre, nivel y recta. Doble clic en un slider lo pone a 0 dB.
+  **Reset** pone todo a 0, borra lo aprendido y desactiva Learn/Match. **Freeze** congela el analizador.
 * Clic en el título → créditos.
-
-**Pendiente:** Learn / Match / Morph y el modo de tercios de octava (los botones están atenuados).
 
 ## Compilar
 
@@ -51,6 +54,6 @@ cp -R "FreeFilter.vst3" ~/Library/Audio/Plug-Ins/VST3/
 
 El plugin original es software comercial de terceros (© Spectral Design GmbH / Steinberg). Este repositorio
 contiene **código propio**: ni la DLL original, ni código decompilado, ni sus mapas de bits se incluyen.
-Las ideas y algoritmos (interpolación, ventana Hann, FIR) no son material con copyright, pero el nombre y la
-imagen del producto original sí pueden estar protegidos: **no publiques ni vendas esto con el nombre del
-original** sin permiso. Por eso el repo es privado.
+Las ideas y algoritmos (interpolación, ventana Hann, FIR, espectros medios) no son material con copyright, pero
+el nombre y la imagen del producto original sí pueden estar protegidos: **no publiques ni vendas esto con el
+nombre del original** sin permiso. Por eso el repo es privado.

@@ -81,7 +81,31 @@ juce::Point<float> FreeFilterEditor::toDesign (juce::Point<float> p) const
 
 bool FreeFilterEditor::isLogAxis() const
 {
-    return processor.apvts.getRawParameterValue ("logaxis")->load() > 0.5f;
+    return processor.isThirdOctave();   // Log = tercios de octava, Lin = bandas iguales
+}
+
+void FreeFilterEditor::setStatus (const juce::String& s)
+{
+    statusText = s;
+    statusUntil = juce::Time::currentTimeMillis() + 3500;
+}
+
+juce::String FreeFilterEditor::idleStatus() const
+{
+    const bool d = processor.learnedFrames (true) > 0, s = processor.learnedFrames (false) > 0;
+    if (processor.isLearnOn()) return processor.isLearnDest() ? "Learning destination..." : "Learning source...";
+    if (d && s) return "Source and Destination learned.";
+    if (d) return "Destination learned.";
+    if (s) return "Source learned.";
+    return {};
+}
+
+void FreeFilterEditor::setMorphFromX (float x)
+{
+    const juce::Rectangle<float> bar (28.0f, 40.0f, 105.0f, 14.0f);
+    const float t = juce::jlimit (0.0f, 1.0f, (x - bar.getX()) / bar.getWidth());
+    if (auto* p = processor.apvts.getParameter ("morph"))
+        p->setValueNotifyingHost (p->convertTo0to1 (t * 200.0f));
 }
 
 float FreeFilterEditor::freqToX (float hz) const
@@ -126,23 +150,14 @@ float FreeFilterEditor::valueAt (float y) const
 
 void FreeFilterEditor::setBand (int b, float dB)
 {
-    if (auto* prm = processor.apvts.getParameter (FreeFilterProcessor::bandId (b)))
+    if (auto* prm = processor.apvts.getParameter (processor.activeBandId (b)))
     {
         if (touched.insert (b).second) prm->beginChangeGesture();
         prm->setValueNotifyingHost (prm->convertTo0to1 (juce::jlimit (-15.0f, 15.0f, dB)));
     }
 }
 
-void FreeFilterEditor::resetAll()
-{
-    for (int b = 0; b < ff::kBands; ++b)
-        if (auto* prm = processor.apvts.getParameter (FreeFilterProcessor::bandId (b)))
-        {
-            prm->beginChangeGesture();
-            prm->setValueNotifyingHost (prm->convertTo0to1 (0.0f));
-            prm->endChangeGesture();
-        }
-}
+void FreeFilterEditor::resetAll() { processor.requestReset(); }
 
 //==============================================================================
 void FreeFilterEditor::resized() { rebuildBackground(); }
@@ -192,11 +207,11 @@ void FreeFilterEditor::drawButton (juce::Graphics& g, juce::Rectangle<float> r, 
 
 void FreeFilterEditor::paintButtons (juce::Graphics& g)
 {
-    // fila superior (Learn/Match: pendiente, se muestran atenuados)
-    drawButton (g, buttonRect (Source), "Source", false, false);
-    drawButton (g, buttonRect (Dest),   "Dest.",  false, false);
-    drawButton (g, buttonRect (Learn),  "Learn",  false, false);
-    drawButton (g, buttonRect (Match),  "Match",  false, false);
+    // fila superior: Source/Dest (selector), Learn y Match
+    drawButton (g, buttonRect (Source), "Source", ! processor.isLearnDest());
+    drawButton (g, buttonRect (Dest),   "Dest.",  processor.isLearnDest());
+    drawButton (g, buttonRect (Learn),  "Learn",  processor.isLearnOn());
+    drawButton (g, buttonRect (Match),  "Match",  processor.isMatchOn(), processor.matchAvailable() || processor.isMatchOn());
 
     // modos de dibujo
     const DrawMode modes[3] = { DrawMode::freehand, DrawMode::level, DrawMode::line };
@@ -347,13 +362,7 @@ void FreeFilterEditor::paintAnalyzer (juce::Graphics& g)
         bool started = false;
         for (float x = plotRect.getX(); x <= plotRect.getRight(); x += 2.0f)
         {
-            const float f = xToFreq (x);
-            const double bin = (double) f / nyq * (ff::kFFT / 2);
-            const double w = 2.0 * ff::kPi * bin / ff::kFFT;
-            double acc = tapsCopy[(size_t) ff::kHalf];
-            for (int n = 1; n <= ff::kHalf; ++n) acc += 2.0 * tapsCopy[(size_t) (ff::kHalf + n)] * std::cos (w * n);
-            const float db = 20.0f * std::log10 ((float) std::max (std::abs (acc), 1.0e-6));
-            const float y = dbToY (db);
+            const float y = dbToY (processor.responseDbAt (xToFreq (x)));
             if (! started) { p.startNewSubPath (x, y); started = true; } else p.lineTo (x, y);
         }
         g.setColour (juce::Colour (0xfff2c418));
@@ -433,10 +442,18 @@ void FreeFilterEditor::paint (juce::Graphics& g)
             g.setColour (juce::Colours::white.withAlpha (dim ? 0.35f : 1.0f));
             g.drawText (txt, r, juce::Justification::centred, false);
         };
-        // Morph (pendiente con Learn/Match): barra atenuada
-        g.setColour (juce::Colour (0xff2b2b2b));
-        g.fillRect (juce::Rectangle<float> (28.0f, 40.0f, 105.0f, 14.0f));
-        box ({ 192.0f, 38.0f, 50.0f, 18.0f }, "100", true);
+        // Morph 0..200 %
+        const float morphPct = processor.apvts.getRawParameterValue ("morph")->load();
+        const bool morphOn = processor.isMatchOn();
+        const juce::Rectangle<float> bar (28.0f, 40.0f, 105.0f, 14.0f);
+        g.setColour (juce::Colour (0xff1a1a1a));
+        g.fillRect (bar);
+        g.setColour (juce::Colour (morphOn ? 0xff6d7fd8 : 0xff4a4a55));
+        g.fillRect (bar.withWidth (bar.getWidth() * morphPct / 200.0f));
+        g.setColour (juce::Colours::white.withAlpha (0.35f));
+        g.drawRect (bar, 1.0f);
+        g.drawVerticalLine ((int) (bar.getX() + bar.getWidth() * 0.5f), bar.getY(), bar.getBottom());
+        box ({ 192.0f, 38.0f, 50.0f, 18.0f }, juce::String (juce::roundToInt (morphPct)), ! morphOn);
         box ({ 278.0f, 38.0f, 56.0f, 18.0f }, readHz, false);
         box ({ 370.0f, 38.0f, 52.0f, 18.0f }, readDb, false);
     }
@@ -444,6 +461,17 @@ void FreeFilterEditor::paint (juce::Graphics& g)
     paintAnalyzer (g);
     paintBands (g);
     paintButtons (g);
+
+    // estado (Learn/Match)
+    {
+        juce::String msg = juce::Time::currentTimeMillis() < statusUntil ? statusText : idleStatus();
+        if (msg.isNotEmpty())
+        {
+            g.setFont (uiFont (10.0f, false, true));
+            g.setColour (juce::Colours::white.withAlpha (0.92f));
+            g.drawText (msg, juce::Rectangle<float> (28.0f, 392.0f, 220.0f, 18.0f), juce::Justification::centredLeft, false);
+        }
+    }
 
     // firma en la esquina inferior derecha
     {
@@ -470,8 +498,8 @@ void FreeFilterEditor::paintAbout (juce::Graphics& g)
                           "\xC2\xA9 1998-2001 Spectral Design GmbH.\n\n"
                           "Reimplementaci\xC3\xB3n en JUCE para VST3 / AU,\n"
                           "Windows x64 y macOS Apple Silicon.\n"
-                          "Filtro FIR de 257 taps contrastado con el original.\n\n"
-                          "Pendiente: Learn / Match / Morph y modo de tercios de octava.\n\n"
+                          "Bandas iguales, Learn / Match / Morph y tercios de octava.\n"
+                          "Contrastado con el original (ver docs/ANALISIS.md).\n\n"
                           "Clic para cerrar."),
                       juce::Rectangle<int> (30, 80, designW - 60, 240), juce::Justification::centred, 12);
 
@@ -500,7 +528,6 @@ void FreeFilterEditor::timerCallback()
         update (specIn, false);
         update (specOut, true);
     }
-    processor.getCurrentTaps (tapsCopy.data());
     repaint();
 }
 
@@ -513,7 +540,8 @@ void FreeFilterEditor::mouseMove (const juce::MouseEvent& e)
     if (boardRect.expanded (0.0f, 8.0f).contains (hover))
     {
         const int b = bandAt (hover.x);
-        const float centre = (float) ((b + 0.5) * processor.getSampleRate_() / 60.0);
+        const float centre = processor.isThirdOctave() ? (float) ff::kThirdOctave[b]
+                                                       : (float) ((b + 0.5) * processor.getSampleRate_() / 60.0);
         readHz = formatHz (centre);
         readDb = juce::String (processor.getBandValue (b), 1);
     }
@@ -521,11 +549,7 @@ void FreeFilterEditor::mouseMove (const juce::MouseEvent& e)
     {
         const float f = xToFreq (hover.x);
         readHz = formatHz (f);
-        const double bin = (double) f / (processor.getSampleRate_() * 0.5) * (ff::kFFT / 2);
-        const double w = 2.0 * ff::kPi * bin / ff::kFFT;
-        double acc = tapsCopy[(size_t) ff::kHalf];
-        for (int n = 1; n <= ff::kHalf; ++n) acc += 2.0 * tapsCopy[(size_t) (ff::kHalf + n)] * std::cos (w * n);
-        readDb = juce::String (20.0 * std::log10 (std::max (std::abs (acc), 1.0e-6)), 1);
+        readDb = juce::String (processor.responseDbAt (f), 1);
     }
 }
 
@@ -550,11 +574,37 @@ void FreeFilterEditor::mouseDown (const juce::MouseEvent& e)
                 if (auto* prm = processor.apvts.getParameter ("freeze"))
                     prm->setValueNotifyingHost (prm->getValue() > 0.5f ? 0.0f : 1.0f);
                 break;
-            case Lin: if (auto* prm = processor.apvts.getParameter ("logaxis")) prm->setValueNotifyingHost (0.0f); break;
-            case Log: if (auto* prm = processor.apvts.getParameter ("logaxis")) prm->setValueNotifyingHost (1.0f); break;
-            default: break; // Source/Dest/Learn/Match: pendiente
+            case Lin: if (auto* prm = processor.apvts.getParameter ("thirds")) prm->setValueNotifyingHost (0.0f); break;
+            case Log: if (auto* prm = processor.apvts.getParameter ("thirds")) prm->setValueNotifyingHost (1.0f); break;
+            case Source: if (auto* prm = processor.apvts.getParameter ("learnDest")) prm->setValueNotifyingHost (0.0f); break;
+            case Dest:   if (auto* prm = processor.apvts.getParameter ("learnDest")) prm->setValueNotifyingHost (1.0f); break;
+            case Learn:
+                if (auto* prm = processor.apvts.getParameter ("learn"))
+                {
+                    const bool turnOn = prm->getValue() < 0.5f;
+                    if (turnOn)
+                        if (auto* m = processor.apvts.getParameter ("matchOn")) m->setValueNotifyingHost (0.0f);
+                    prm->setValueNotifyingHost (turnOn ? 1.0f : 0.0f);
+                }
+                break;
+            case Match:
+                if (processor.isLearnOn())                       setStatus ("Disabled. PlugIn is in learn mode.");
+                else if (! processor.matchAvailable() && ! processor.isMatchOn())
+                                                                 setStatus ("Disabled. Learn both source and destination data !");
+                else if (auto* prm = processor.apvts.getParameter ("matchOn"))
+                    prm->setValueNotifyingHost (prm->getValue() > 0.5f ? 0.0f : 1.0f);
+                break;
+            default: break;
         }
         repaint();
+        return;
+    }
+
+    // barra de Morph
+    if (juce::Rectangle<float> (28.0f, 38.0f, 105.0f, 18.0f).contains (p))
+    {
+        if (processor.isMatchOn()) { morphDragging = true; setMorphFromX (p.x); }
+        else setStatus ("Disabled. Activate match button first !");
         return;
     }
 
@@ -572,6 +622,7 @@ void FreeFilterEditor::mouseDown (const juce::MouseEvent& e)
 void FreeFilterEditor::mouseDrag (const juce::MouseEvent& e)
 {
     const auto p = toDesign (e.position);
+    if (morphDragging) { setMorphFromX (p.x); return; }
     if (showAbout || ! draggingBoard) return;
 
     const int b = bandAt (p.x);
@@ -618,11 +669,12 @@ void FreeFilterEditor::mouseDrag (const juce::MouseEvent& e)
 void FreeFilterEditor::mouseUp (const juce::MouseEvent&)
 {
     for (int b : touched)
-        if (auto* prm = processor.apvts.getParameter (FreeFilterProcessor::bandId (b)))
+        if (auto* prm = processor.apvts.getParameter (processor.activeBandId (b)))
             prm->endChangeGesture();
     touched.clear();
     lastBand = -1;
     draggingBoard = false;
+    morphDragging = false;
 }
 
 void FreeFilterEditor::mouseDoubleClick (const juce::MouseEvent& e)
