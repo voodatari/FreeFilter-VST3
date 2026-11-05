@@ -7,6 +7,7 @@ namespace
     const juce::Rectangle<float> plotRect     { 28.0f, 76.0f, 360.0f, 160.0f };
     const juce::Rectangle<float> boardRect    { 25.0f, 270.0f, 360.0f, 70.0f };
     const juce::Rectangle<float> titleRect    { 200.0f, 8.0f, 245.0f, 26.0f };
+    const juce::Rectangle<float> aboutRect    { 318.0f, 8.0f, 127.0f, 26.0f };   // solo el texto "FreeFilter"; no pisa el boton Match
     constexpr float bandW = 12.0f;
     constexpr float dbTop = 20.0f, dbBottom = -80.0f;
 
@@ -558,7 +559,7 @@ void FreeFilterEditor::mouseDown (const juce::MouseEvent& e)
     const auto p = toDesign (e.position);
 
     if (showAbout) { showAbout = false; repaint(); return; }
-    if (titleRect.contains (p)) { showAbout = true; repaint(); return; }
+    if (aboutRect.contains (p)) { showAbout = true; repaint(); return; }
 
     // botones
     for (int id = 0; id < NumButtons; ++id)
