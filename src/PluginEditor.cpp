@@ -374,7 +374,7 @@ void FreeFilterEditor::paintAnalyzer (juce::Graphics& g)
     g.setFont (uiFont (9.0f, true));
     g.setColour (juce::Colours::white.withAlpha (0.85f));
     g.drawText ("dB", juce::Rectangle<float> (394.0f, 72.0f, 30.0f, 12.0f), juce::Justification::centredLeft, false);
-    for (int d = 20; d >= -80; d -= 20)
+    for (int d = 0; d >= -60; d -= 20)   // el +20 y el -80 quedan para las etiquetas 'dB' y 'kHz'
         g.drawText (juce::String (d), juce::Rectangle<float> (394.0f, dbToY ((float) d) - 6.0f, 34.0f, 12.0f),
                     juce::Justification::centredLeft, false);
     g.drawText ("kHz", juce::Rectangle<float> (394.0f, 224.0f, 30.0f, 12.0f), juce::Justification::centredLeft, false);
