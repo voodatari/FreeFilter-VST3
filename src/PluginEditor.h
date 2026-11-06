@@ -60,9 +60,16 @@ private:
     std::array<float, kFftSize / 2> specIn {}, specOut {};
 
     float axisMax() const;                           // frecuencia maxima de ambos ejes (<= 24 kHz)
-    void launchSave (bool dest);
-    void launchLoad (bool dest);
-    std::unique_ptr<juce::FileChooser> chooser;
+    // ---- presets de curvas aprendidas (sin dialogos del sistema) ----
+    juce::TextEditor presetName;
+    std::vector<juce::File> presetFiles;
+    int presetIndex = -1;
+    juce::int64 delArmedUntil = 0;
+    void refreshPresets (const juce::String& selectName = {});
+    void presetStep (int delta);
+    void presetSave();
+    void presetDelete();
+    void layoutPresetEditor();
 
     juce::Image background;
     bool showAbout = false;

@@ -14,7 +14,7 @@ namespace
     const juce::Colour panelTop    { 0xffc2432f };
     const juce::Colour panelBottom { 0xff8f2a1f };
 
-    enum ButtonId { Source, Dest, Learn, Match, ModeFree, ModeLevel, ModeLine, Reset, Freeze, Lin, Log, Save, Load, NumButtons };
+    enum ButtonId { Source, Dest, Learn, Match, ModeFree, ModeLevel, ModeLine, Reset, Freeze, Lin, Log, PresetPrev, PresetNext, PresetSave, PresetDel, NumButtons };
 
     juce::Rectangle<float> buttonRect (int id)
     {
@@ -31,8 +31,10 @@ namespace
             case Freeze:    return { 242.0f, 362.0f, 40.0f, 18.0f };
             case Lin:       return { 294.0f, 362.0f, 32.0f, 18.0f };
             case Log:       return { 334.0f, 362.0f, 32.0f, 18.0f };
-            case Save:      return { 247.0f, 10.0f, 32.0f, 17.0f };
-            case Load:      return { 283.0f, 10.0f, 32.0f, 17.0f };
+            case PresetPrev: return { 28.0f, 388.0f, 16.0f, 16.0f };
+            case PresetNext: return { 204.0f, 388.0f, 16.0f, 16.0f };
+            case PresetSave: return { 226.0f, 388.0f, 34.0f, 16.0f };
+            case PresetDel:  return { 264.0f, 388.0f, 28.0f, 16.0f };
             default:        return {};
         }
     }
@@ -66,6 +68,19 @@ FreeFilterEditor::FreeFilterEditor (FreeFilterProcessor& p)
     getConstrainer()->setFixedAspectRatio ((double) designW / designH);
     setResizeLimits (designW, designH, designW * 3, designH * 3);
     setSize (designW * 5 / 4, designH * 5 / 4);
+
+    presetName.setMultiLine (false);
+    presetName.setReturnKeyStartsNewLine (false);
+    presetName.setScrollbarsShown (false);
+    presetName.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff0b0b12));
+    presetName.setColour (juce::TextEditor::textColourId, juce::Colours::white);
+    presetName.setColour (juce::TextEditor::outlineColourId, juce::Colours::white.withAlpha (0.4f));
+    presetName.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colour (0xff7be07b));
+    presetName.setTextToShowWhenEmpty ("preset name", juce::Colours::grey);
+    presetName.setIndents (4, 0);
+    presetName.setInputRestrictions (40);
+    addAndMakeVisible (presetName);
+    refreshPresets();
 
     startTimerHz (30);
 }
@@ -168,7 +183,7 @@ void FreeFilterEditor::setBand (int b, float dB)
 void FreeFilterEditor::resetAll() { processor.requestReset(); }
 
 //==============================================================================
-void FreeFilterEditor::resized() { rebuildBackground(); }
+void FreeFilterEditor::resized() { rebuildBackground(); layoutPresetEditor(); }
 
 void FreeFilterEditor::rebuildBackground()
 {
@@ -220,8 +235,11 @@ void FreeFilterEditor::paintButtons (juce::Graphics& g)
     drawButton (g, buttonRect (Dest),   "Dest.",  processor.isLearnDest());
     drawButton (g, buttonRect (Learn),  "Learn",  processor.isLearnOn());
     drawButton (g, buttonRect (Match),  "Match",  processor.isMatchOn(), processor.matchAvailable() || processor.isMatchOn());
-    drawButton (g, buttonRect (Save), "Save", false, processor.learnedFrames (processor.isLearnDest()) > 0);
-    drawButton (g, buttonRect (Load), "Load", false);
+    // presets de curvas aprendidas
+    drawButton (g, buttonRect (PresetPrev), "<", false, ! presetFiles.empty());
+    drawButton (g, buttonRect (PresetNext), ">", false, ! presetFiles.empty());
+    drawButton (g, buttonRect (PresetSave), "Save", false, processor.learnedFrames (processor.isLearnDest()) > 0);
+    drawButton (g, buttonRect (PresetDel),  "Del",  juce::Time::currentTimeMillis() < delArmedUntil, presetIndex >= 0);
 
     // modos de dibujo
     const DrawMode modes[3] = { DrawMode::freehand, DrawMode::level, DrawMode::line };
@@ -473,14 +491,14 @@ void FreeFilterEditor::paint (juce::Graphics& g)
     paintBands (g);
     paintButtons (g);
 
-    // estado (Learn/Match)
+    // estado (Learn/Match/presets): dentro del analizador, arriba a la izquierda
     {
         juce::String msg = juce::Time::currentTimeMillis() < statusUntil ? statusText : idleStatus();
         if (msg.isNotEmpty())
         {
             g.setFont (uiFont (10.0f, false, true));
             g.setColour (juce::Colours::white.withAlpha (0.92f));
-            g.drawText (msg, juce::Rectangle<float> (28.0f, 392.0f, 220.0f, 18.0f), juce::Justification::centredLeft, false);
+            g.drawText (msg, juce::Rectangle<float> (32.0f, 78.0f, 330.0f, 14.0f), juce::Justification::centredLeft, false);
         }
     }
 
@@ -526,49 +544,100 @@ void FreeFilterEditor::paintAbout (juce::Graphics& g)
 }
 
 //==============================================================================
-static juce::File curvesFolder()
+static juce::File presetsFolder()
 {
-    auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("FreeFilter");
+    auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                   .getChildFile ("FreeFilter").getChildFile ("Presets");
     dir.createDirectory();
     return dir;
 }
 
-void FreeFilterEditor::launchSave (bool dest)
+static juce::String sanitizeName (juce::String s)
 {
-    if (processor.learnedFrames (dest) <= 0)
-    {
-        setStatus (dest ? "Nothing learned in Dest. to save." : "Nothing learned in Source to save.");
-        return;
-    }
-    const juce::String side = dest ? "Dest" : "Source";
-    chooser = std::make_unique<juce::FileChooser> ("Save learned " + side + " curve",
-                                                   curvesFolder().getChildFile (side + " curve.ffcurve"), "*.ffcurve");
-    juce::Component::SafePointer<FreeFilterEditor> safe (this);
-    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
-                              | juce::FileBrowserComponent::warnAboutOverwriting,
-                          [safe, dest, side] (const juce::FileChooser& fc)
-                          {
-                              if (safe == nullptr) return;
-                              auto f = fc.getResult();
-                              if (f == juce::File()) return;
-                              f = f.withFileExtension ("ffcurve");
-                              safe->setStatus (safe->processor.saveLearned (dest, f) ? side + " curve saved." : "Could not save the curve.");
-                          });
+    s = s.trim();
+    juce::String out;
+    for (auto ch : s) out += (juce::CharacterFunctions::isLetterOrDigit (ch) || ch == ' ' || ch == '-' || ch == '_' || ch == '.') ? juce::String::charToString (ch) : juce::String ("_");
+    return out.trim();
 }
 
-void FreeFilterEditor::launchLoad (bool dest)
+void FreeFilterEditor::refreshPresets (const juce::String& selectName)
 {
-    const juce::String side = dest ? "Dest" : "Source";
-    chooser = std::make_unique<juce::FileChooser> ("Load " + side + " curve", curvesFolder(), "*.ffcurve");
-    juce::Component::SafePointer<FreeFilterEditor> safe (this);
-    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                          [safe, dest, side] (const juce::FileChooser& fc)
-                          {
-                              if (safe == nullptr) return;
-                              auto f = fc.getResult();
-                              if (f == juce::File()) return;
-                              safe->setStatus (safe->processor.loadLearned (dest, f) ? side + " curve loaded." : "Not a valid FreeFilter curve.");
-                          });
+    presetFiles.clear();
+    for (const auto& f : presetsFolder().findChildFiles (juce::File::findFiles, false, "*.ffcurve"))
+        presetFiles.push_back (f);
+    std::sort (presetFiles.begin(), presetFiles.end(),
+               [] (const juce::File& a, const juce::File& b) { return a.getFileNameWithoutExtension().compareIgnoreCase (b.getFileNameWithoutExtension()) < 0; });
+
+    presetIndex = presetFiles.empty() ? -1 : juce::jlimit (0, (int) presetFiles.size() - 1, presetIndex);
+    if (selectName.isNotEmpty())
+        for (size_t i = 0; i < presetFiles.size(); ++i)
+            if (presetFiles[i].getFileNameWithoutExtension() == selectName) presetIndex = (int) i;
+}
+
+// Recorre los presets y carga el elegido en el lado seleccionado (Source o Dest.).
+void FreeFilterEditor::presetStep (int delta)
+{
+    refreshPresets();
+    if (presetFiles.empty()) { setStatus ("No presets yet. Learn a curve and press Save."); return; }
+    presetIndex = (presetIndex < 0 ? (delta > 0 ? 0 : (int) presetFiles.size() - 1)
+                                   : (presetIndex + delta + (int) presetFiles.size()) % (int) presetFiles.size());
+    const auto& f = presetFiles[(size_t) presetIndex];
+    presetName.setText (f.getFileNameWithoutExtension(), false);
+    const bool dest = processor.isLearnDest();
+    setStatus (processor.loadLearned (dest, f) ? juce::String (dest ? "Dest. " : "Source ") + "loaded: " + f.getFileNameWithoutExtension()
+                                               : "Not a valid FreeFilter preset.");
+}
+
+// Guarda la curva aprendida del lado seleccionado con el nombre escrito (o uno automatico).
+void FreeFilterEditor::presetSave()
+{
+    const bool dest = processor.isLearnDest();
+    if (processor.learnedFrames (dest) <= 0)
+    {
+        setStatus (dest ? "Nothing learned in Dest. yet." : "Nothing learned in Source yet.");
+        return;
+    }
+    auto name = sanitizeName (presetName.getText());
+    if (name.isEmpty())
+    {
+        refreshPresets();
+        name = juce::String (dest ? "Dest " : "Source ") + juce::String ((int) presetFiles.size() + 1).paddedLeft ('0', 2);
+    }
+    const auto file = presetsFolder().getChildFile (name + ".ffcurve");
+    const bool existed = file.existsAsFile();
+    if (processor.saveLearned (dest, file))
+    {
+        refreshPresets (name);
+        presetName.setText (name, false);
+        setStatus ((existed ? "Preset overwritten: " : "Preset saved: ") + name);
+    }
+    else
+        setStatus ("Could not save the preset.");
+}
+
+// Borrar pide una segunda pulsacion (3,5 s) para evitar accidentes; no hay dialogos.
+void FreeFilterEditor::presetDelete()
+{
+    if (presetIndex < 0 || presetIndex >= (int) presetFiles.size()) { setStatus ("No preset selected."); return; }
+    const auto f = presetFiles[(size_t) presetIndex];
+    if (juce::Time::currentTimeMillis() >= delArmedUntil)
+    {
+        delArmedUntil = juce::Time::currentTimeMillis() + 3500;
+        setStatus ("Press Del again to delete: " + f.getFileNameWithoutExtension());
+        return;
+    }
+    delArmedUntil = 0;
+    const auto n = f.getFileNameWithoutExtension();
+    setStatus (f.deleteFile() ? "Preset deleted: " + n : "Could not delete the preset.");
+    refreshPresets();
+    presetName.setText (presetIndex >= 0 ? presetFiles[(size_t) presetIndex].getFileNameWithoutExtension() : juce::String(), false);
+}
+
+void FreeFilterEditor::layoutPresetEditor()
+{
+    const auto r = juce::Rectangle<float> (48.0f, 388.0f, 152.0f, 16.0f).transformedBy (designToScreen()).toNearestInt();
+    presetName.setBounds (r);
+    presetName.applyFontToAllText (juce::Font (juce::FontOptions ((float) r.getHeight() * 0.62f)));
 }
 
 //==============================================================================
@@ -621,8 +690,8 @@ void FreeFilterEditor::mouseDown (const juce::MouseEvent& e)
 {
     const auto p = toDesign (e.position);
 
-    if (showAbout) { showAbout = false; repaint(); return; }
-    if (aboutRect.contains (p)) { showAbout = true; repaint(); return; }
+    if (showAbout) { showAbout = false; presetName.setVisible (true); repaint(); return; }
+    if (aboutRect.contains (p)) { showAbout = true; presetName.setVisible (false); repaint(); return; }
 
     // botones
     for (int id = 0; id < NumButtons; ++id)
@@ -658,8 +727,10 @@ void FreeFilterEditor::mouseDown (const juce::MouseEvent& e)
                 else if (auto* prm = processor.apvts.getParameter ("matchOn"))
                     prm->setValueNotifyingHost (prm->getValue() > 0.5f ? 0.0f : 1.0f);
                 break;
-            case Save: launchSave (processor.isLearnDest()); break;
-            case Load: launchLoad (processor.isLearnDest()); break;
+            case PresetPrev: presetStep (-1); break;
+            case PresetNext: presetStep (+1); break;
+            case PresetSave: presetSave();    break;
+            case PresetDel:  presetDelete();  break;
             default: break;
         }
         repaint();
