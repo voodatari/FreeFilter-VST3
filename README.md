@@ -1,4 +1,4 @@
-# FreeFilter (VST3 / AU, Windows x64 + macOS Apple Silicon)
+# FreeFilter 1.1 (VST3 / AU, Windows x64 + macOS Apple Silicon)
 
 Reimplementación en JUCE 8 del ecualizador de filtro libre **ME FreeFilter** (Steinberg Mastering Edition,
 2001). Formatos: **VST3**, **AU** y **Standalone**. Compila en **Windows x64** y **macOS arm64** (M1–M4)
@@ -16,6 +16,9 @@ El filtro se dedujo analizando el plugin original y está contrastado contra él
 * **Learn / Match / Morph:** elige **Source** o **Dest.**, activa **Learn** y reproduce el material; al terminar,
   aprende el otro lado. Con ambos aprendidos, **Match** aplica `Morph · (Dest/Source)` en dB (Morph de 0 a 200 %)
   más los sliders, que en Match son un juego independiente.
+* **Guardar / cargar curvas aprendidas:** los botones **Save** y **Load** (junto a Match) guardan o cargan en un
+  archivo `.ffcurve` la curva aprendida del lado seleccionado (Source o Dest.), para reutilizarla en otros proyectos.
+  Lo aprendido **persiste** al parar/arrancar la reproducción y se guarda dentro del proyecto del DAW.
 * **Analizador de espectro** de entrada (verde), salida (rojo) y curva del filtro (amarillo).
 * Modos de dibujo: libre, nivel y recta. Doble clic en un slider lo pone a 0 dB.
   **Reset** pone todo a 0, borra lo aprendido y desactiva Learn/Match. **Freeze** congela el analizador.

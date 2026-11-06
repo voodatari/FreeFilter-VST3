@@ -131,9 +131,16 @@ void FreeFilterProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
     for (auto& f : fir) f.reset();
     xfadeLeft = 0;
-    learnerEq.reset();
-    learnerTh.reset();
-    framesDest = framesSource = 0;
+    learnerEq.resetRing();          // el anillo se reinicia, lo aprendido NO (el host llama a esto al parar/arrancar)
+    learnerTh.resetRing();
+    if (lastLearnSr > 0.0 && std::abs (lastLearnSr - sampleRate) > 1.0)
+    {
+        const juce::SpinLock::ScopedLockType sl (learnLock);   // otra frecuencia de muestreo: lo aprendido ya no vale
+        learnerEq.clearAll();
+        learnerTh.clearAll();
+        ++dataVersion;
+    }
+    lastLearnSr = sampleRate;
     lastMatchOn = matchEffective = false;
     haveSig = false;
     activeMode = isThirdOctave() ? ff::Mode::ThirdOctave : ff::Mode::Equal;
@@ -222,6 +229,7 @@ float FreeFilterProcessor::responseDbAt (float hz) const
 void FreeFilterProcessor::takeMatchSnapshot()
 {
     auto& learner = activeMode == ff::Mode::Equal ? learnerEq : learnerTh;
+    const juce::SpinLock::ScopedLockType sl0 (learnLock);
     const juce::SpinLock::ScopedLockType sl (snapLock);
     learner.averageInto (ff::SpectrumLearner::Dest,   snapDest.data());
     learner.averageInto (ff::SpectrumLearner::Source, snapSource.data());
@@ -260,8 +268,11 @@ void FreeFilterProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     if (resetRequested.exchange (false))
     {
-        learnerEq.clearAll();
-        learnerTh.clearAll();
+        {
+            const juce::SpinLock::ScopedLockType sl (learnLock);
+            learnerEq.clearAll();
+            learnerTh.clearAll();
+        }
         framesDest = framesSource = 0;
         lastMatchOn = matchEffective = false;
         haveSig = false;
@@ -287,6 +298,9 @@ void FreeFilterProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     learnerTh.setTarget (target);
     framesDest.store (learner.frames (ff::SpectrumLearner::Dest));
     framesSource.store (learner.frames (ff::SpectrumLearner::Source));
+
+    // lo aprendido cambio desde fuera (archivo cargado, estado del proyecto): rehacer la instantanea
+    if (dataVersion.load() != lastDataVersion) { lastDataVersion = dataVersion.load(); matchEffective = false; }
 
     // ---- Match: se fija una instantanea (medias) al activarlo, como el original ----
     const bool matchWanted = isMatchOn() && ! learnOn;
@@ -347,7 +361,20 @@ void FreeFilterProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             const float* src = buffer.getReadPointer (ch) + offset;
             for (int i = 0; i < n; ++i) monoIn[(size_t) i] += src[i] / (float) numCh;
         }
-        for (int i = 0; i < n; ++i) { learnerEq.push (monoIn[(size_t) i]); learnerTh.push (monoIn[(size_t) i]); }
+        for (int i = 0; i < n; ++i)
+        {
+            const float x = monoIn[(size_t) i];
+            if (learnerEq.advance (x) && learnOn)
+            {
+                const juce::SpinLock::ScopedLockType sl (learnLock);
+                learnerEq.analyseFrame();
+            }
+            if (learnerTh.advance (x) && learnOn)
+            {
+                const juce::SpinLock::ScopedLockType sl (learnLock);
+                learnerTh.analyseFrame();
+            }
+        }
 
         if (mode == ff::Mode::Equal)
         {
@@ -400,9 +427,122 @@ juce::AudioProcessorEditor* FreeFilterProcessor::createEditor()
     return new FreeFilterEditor (*this);
 }
 
+//==============================================================================
+// Lo aprendido (Dest/Source, ambos modos) se guarda en el estado del proyecto y en archivos .ffcurve.
+static juce::String floatsToBase64 (const std::vector<double>& v)
+{
+    std::vector<float> f (v.size());
+    for (size_t i = 0; i < v.size(); ++i) f[i] = (float) v[i];
+    return juce::Base64::toBase64 (f.data(), f.size() * sizeof (float));
+}
+
+static bool base64ToDoubles (const juce::String& s, size_t expected, std::vector<double>& out)
+{
+    juce::MemoryOutputStream mo;
+    if (! juce::Base64::convertFromBase64 (mo, s)) return false;
+    if (mo.getDataSize() != expected * sizeof (float)) return false;
+    const auto* f = static_cast<const float*> (mo.getData());
+    out.assign (expected, 0.0);
+    for (size_t i = 0; i < expected; ++i) out[i] = (double) f[i];
+    return true;
+}
+
+bool FreeFilterProcessor::exportSide (bool dest, std::vector<double>& eq, std::vector<double>& th, int& framesEq, int& framesTh)
+{
+    const auto t = dest ? ff::SpectrumLearner::Dest : ff::SpectrumLearner::Source;
+    const juce::SpinLock::ScopedLockType sl (learnLock);
+    framesEq = learnerEq.frames (t);
+    framesTh = learnerTh.frames (t);
+    eq.assign ((size_t) ff::kEqBins, 0.0);
+    th.assign ((size_t) ff::kThBins, 0.0);
+    learnerEq.averageInto (t, eq.data());
+    learnerTh.averageInto (t, th.data());
+    return framesEq > 0 || framesTh > 0;
+}
+
+void FreeFilterProcessor::importSide (bool dest, const std::vector<double>& eq, const std::vector<double>& th, int framesEq, int framesTh)
+{
+    const auto t = dest ? ff::SpectrumLearner::Dest : ff::SpectrumLearner::Source;
+    {
+        const juce::SpinLock::ScopedLockType sl (learnLock);
+        if (framesEq > 0 && eq.size() == (size_t) ff::kEqBins) learnerEq.importAverage (t, eq.data(), framesEq);
+        else learnerEq.clear (t);
+        if (framesTh > 0 && th.size() == (size_t) ff::kThBins) learnerTh.importAverage (t, th.data(), framesTh);
+        else learnerTh.clear (t);
+    }
+    ++dataVersion;
+}
+
+juce::ValueTree FreeFilterProcessor::makeLearnedTree()
+{
+    juce::ValueTree t ("learned");
+    for (bool dest : { true, false })
+    {
+        std::vector<double> eq, th;
+        int fe = 0, ft = 0;
+        exportSide (dest, eq, th, fe, ft);
+        const juce::String p = dest ? "dest" : "source";
+        t.setProperty (p + "FramesEq", fe, nullptr);
+        t.setProperty (p + "FramesTh", ft, nullptr);
+        if (fe > 0) t.setProperty (p + "Eq", floatsToBase64 (eq), nullptr);
+        if (ft > 0) t.setProperty (p + "Th", floatsToBase64 (th), nullptr);
+    }
+    return t;
+}
+
+void FreeFilterProcessor::readLearnedTree (const juce::ValueTree& t)
+{
+    if (! t.isValid()) return;
+    for (bool dest : { true, false })
+    {
+        const juce::String p = dest ? "dest" : "source";
+        const int fe = (int) t.getProperty (p + "FramesEq", 0), ft = (int) t.getProperty (p + "FramesTh", 0);
+        std::vector<double> eq, th;
+        const bool okE = fe > 0 && base64ToDoubles (t.getProperty (p + "Eq").toString(), (size_t) ff::kEqBins, eq);
+        const bool okT = ft > 0 && base64ToDoubles (t.getProperty (p + "Th").toString(), (size_t) ff::kThBins, th);
+        importSide (dest, eq, th, okE ? fe : 0, okT ? ft : 0);
+    }
+}
+
+bool FreeFilterProcessor::saveLearned (bool dest, const juce::File& file)
+{
+    std::vector<double> eq, th;
+    int fe = 0, ft = 0;
+    if (! exportSide (dest, eq, th, fe, ft)) return false;
+
+    juce::XmlElement root ("FreeFilterCurve");
+    root.setAttribute ("version", 1);
+    root.setAttribute ("side", dest ? "dest" : "source");
+    root.setAttribute ("sampleRate", currentSampleRate.load());
+    root.setAttribute ("framesEq", fe);
+    root.setAttribute ("framesTh", ft);
+    if (fe > 0) root.createNewChildElement ("eq")->addTextElement (floatsToBase64 (eq));
+    if (ft > 0) root.createNewChildElement ("third")->addTextElement (floatsToBase64 (th));
+    return root.writeTo (file);
+}
+
+bool FreeFilterProcessor::loadLearned (bool dest, const juce::File& file)
+{
+    auto xml = juce::XmlDocument::parse (file);
+    if (xml == nullptr || ! xml->hasTagName ("FreeFilterCurve")) return false;
+
+    const int fe = xml->getIntAttribute ("framesEq", 0), ft = xml->getIntAttribute ("framesTh", 0);
+    std::vector<double> eq, th;
+    const auto* eqEl = xml->getChildByName ("eq");
+    const auto* thEl = xml->getChildByName ("third");
+    const bool okE = fe > 0 && eqEl != nullptr && base64ToDoubles (eqEl->getAllSubText().trim(), (size_t) ff::kEqBins, eq);
+    const bool okT = ft > 0 && thEl != nullptr && base64ToDoubles (thEl->getAllSubText().trim(), (size_t) ff::kThBins, th);
+    if (! okE && ! okT) return false;
+    importSide (dest, eq, th, okE ? fe : 0, okT ? ft : 0);
+    return true;
+}
+
 void FreeFilterProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    if (auto xml = apvts.copyState().createXml())
+    auto state = apvts.copyState();
+    state.removeChild (state.getChildWithName ("learned"), nullptr);
+    state.appendChild (makeLearnedTree(), nullptr);
+    if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
 
@@ -410,7 +550,11 @@ void FreeFilterProcessor::setStateInformation (const void* data, int sizeInBytes
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
+        {
+            const auto tree = juce::ValueTree::fromXml (*xml);
+            apvts.replaceState (tree);
+            readLearnedTree (tree.getChildWithName ("learned"));
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

@@ -59,6 +59,11 @@ private:
     std::array<float, kFftSize> sampBuf {};
     std::array<float, kFftSize / 2> specIn {}, specOut {};
 
+    float axisMax() const;                           // frecuencia maxima de ambos ejes (<= 24 kHz)
+    void launchSave (bool dest);
+    void launchLoad (bool dest);
+    std::unique_ptr<juce::FileChooser> chooser;
+
     juce::Image background;
     bool showAbout = false;
 

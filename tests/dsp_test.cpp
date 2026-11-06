@@ -115,6 +115,30 @@ int main()
         CHECK (std::abs (mean / (0.04 * 1024.0) - 1.0) < 0.1, "potencia media = %g (esperado %g)", mean, 0.04 * 1024.0);
     }
 
+    // 7b) Lo aprendido sobrevive a reiniciar el anillo (parar/arrancar la reproduccion) y a exportar/importar
+    {
+        ff::SpectrumLearner lr;
+        lr.configure (1024, 768);
+        lr.setTarget (ff::SpectrumLearner::Source);
+        std::normal_distribution<float> nd (0.0f, 0.3f);
+        for (int i = 0; i < 20000; ++i) lr.push (nd (rng));
+        const int before = lr.frames (ff::SpectrumLearner::Source);
+        const auto avgBefore = lr.average (ff::SpectrumLearner::Source);
+        lr.resetRing();   // lo que hace prepareToPlay cuando el host para y arranca
+        CHECK (lr.frames (ff::SpectrumLearner::Source) == before, "resetRing borro lo aprendido");
+        auto avgAfter = lr.average (ff::SpectrumLearner::Source);
+        for (size_t k = 0; k < avgAfter.size(); ++k)
+            CHECK (avgAfter[k] == avgBefore[k], "resetRing cambio el espectro en %zu", k);
+
+        ff::SpectrumLearner other;
+        other.configure (1024, 768);
+        other.importAverage (ff::SpectrumLearner::Dest, avgBefore.data(), before);
+        CHECK (other.frames (ff::SpectrumLearner::Dest) == before, "importAverage: frames");
+        auto imp = other.average (ff::SpectrumLearner::Dest);
+        for (size_t k = 0; k < imp.size(); ++k)
+            CHECK (std::abs (imp[k] - avgBefore[k]) <= 1e-9 * std::max (1.0, avgBefore[k]), "importAverage: bin %zu", k);
+    }
+
     // 8) Modo de tercios de octava: un slider en 1 kHz sube la zona de 1 kHz, no la de 100 Hz ni la de 10 kHz
     {
         std::vector<float> t ((size_t) ff::kThTaps);

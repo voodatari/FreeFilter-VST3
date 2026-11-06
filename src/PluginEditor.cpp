@@ -14,7 +14,7 @@ namespace
     const juce::Colour panelTop    { 0xffc2432f };
     const juce::Colour panelBottom { 0xff8f2a1f };
 
-    enum ButtonId { Source, Dest, Learn, Match, ModeFree, ModeLevel, ModeLine, Reset, Freeze, Lin, Log, NumButtons };
+    enum ButtonId { Source, Dest, Learn, Match, ModeFree, ModeLevel, ModeLine, Reset, Freeze, Lin, Log, Save, Load, NumButtons };
 
     juce::Rectangle<float> buttonRect (int id)
     {
@@ -31,6 +31,8 @@ namespace
             case Freeze:    return { 242.0f, 362.0f, 40.0f, 18.0f };
             case Lin:       return { 294.0f, 362.0f, 32.0f, 18.0f };
             case Log:       return { 334.0f, 362.0f, 32.0f, 18.0f };
+            case Save:      return { 247.0f, 10.0f, 32.0f, 17.0f };
+            case Load:      return { 283.0f, 10.0f, 32.0f, 17.0f };
             default:        return {};
         }
     }
@@ -109,28 +111,33 @@ void FreeFilterEditor::setMorphFromX (float x)
         p->setValueNotifyingHost (p->convertTo0to1 (t * 200.0f));
 }
 
+float FreeFilterEditor::axisMax() const
+{
+    return juce::jmin (24000.0f, (float) processor.getSampleRate_() * 0.5f);   // mismo maximo en Lin y Log
+}
+
 float FreeFilterEditor::freqToX (float hz) const
 {
-    const float nyq = (float) processor.getSampleRate_() * 0.5f;
+    const float hi = axisMax();
     if (isLogAxis())
     {
-        const float lo = 20.0f, hi = juce::jmin (20000.0f, nyq);
+        const float lo = 20.0f;
         const float t = std::log (juce::jmax (lo, hz) / lo) / std::log (hi / lo);
         return plotRect.getX() + juce::jlimit (0.0f, 1.0f, t) * plotRect.getWidth();
     }
-    return plotRect.getX() + juce::jlimit (0.0f, 1.0f, hz / nyq) * plotRect.getWidth();
+    return plotRect.getX() + juce::jlimit (0.0f, 1.0f, hz / hi) * plotRect.getWidth();
 }
 
 float FreeFilterEditor::xToFreq (float x) const
 {
-    const float nyq = (float) processor.getSampleRate_() * 0.5f;
+    const float hi = axisMax();
     const float t = juce::jlimit (0.0f, 1.0f, (x - plotRect.getX()) / plotRect.getWidth());
     if (isLogAxis())
     {
-        const float lo = 20.0f, hi = juce::jmin (20000.0f, nyq);
+        const float lo = 20.0f;
         return lo * std::pow (hi / lo, t);
     }
-    return t * nyq;
+    return t * hi;
 }
 
 float FreeFilterEditor::dbToY (float db) const
@@ -191,8 +198,8 @@ void FreeFilterEditor::rebuildBackground()
 
 void FreeFilterEditor::drawButton (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& text, bool on, bool enabled)
 {
-    g.setGradientFill (juce::ColourGradient (juce::Colour (on ? 0xffb8b8b8 : 0xfff0f0f0), r.getX(), r.getY(),
-                                             juce::Colour (on ? 0xff8c8c8c : 0xffbdbdbd), r.getX(), r.getBottom(), false));
+    g.setGradientFill (juce::ColourGradient (juce::Colour (on ? 0xff7be07b : 0xfff0f0f0), r.getX(), r.getY(),
+                                             juce::Colour (on ? 0xff2f9a35 : 0xffbdbdbd), r.getX(), r.getBottom(), false));
     g.fillRoundedRectangle (r, 2.0f);
     g.setColour (juce::Colours::black.withAlpha (0.6f));
     g.drawRoundedRectangle (r, 2.0f, 1.0f);
@@ -213,6 +220,8 @@ void FreeFilterEditor::paintButtons (juce::Graphics& g)
     drawButton (g, buttonRect (Dest),   "Dest.",  processor.isLearnDest());
     drawButton (g, buttonRect (Learn),  "Learn",  processor.isLearnOn());
     drawButton (g, buttonRect (Match),  "Match",  processor.isMatchOn(), processor.matchAvailable() || processor.isMatchOn());
+    drawButton (g, buttonRect (Save), "Save", false, processor.learnedFrames (processor.isLearnDest()) > 0);
+    drawButton (g, buttonRect (Load), "Load", false);
 
     // modos de dibujo
     const DrawMode modes[3] = { DrawMode::freehand, DrawMode::level, DrawMode::line };
@@ -326,14 +335,15 @@ void FreeFilterEditor::paintAnalyzer (juce::Graphics& g)
     for (int d = -80; d <= 20; d += 20)
         g.drawHorizontalLine ((int) dbToY ((float) d), plotRect.getX(), plotRect.getRight());
     const float nyq = (float) processor.getSampleRate_() * 0.5f;
+    const float axMax = axisMax();
     if (isLogAxis())
     {
-        for (float f : { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f })
-            if (f < nyq) g.drawVerticalLine ((int) freqToX (f), plotRect.getY(), plotRect.getBottom());
+        for (float f : { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f })
+            if (f < axMax) g.drawVerticalLine ((int) freqToX (f), plotRect.getY(), plotRect.getBottom());
     }
     else
     {
-        for (float f = 5000.0f; f < nyq; f += 5000.0f)
+        for (float f = 5000.0f; f < axMax; f += 5000.0f)
             g.drawVerticalLine ((int) freqToX (f), plotRect.getY(), plotRect.getBottom());
     }
 
@@ -383,13 +393,13 @@ void FreeFilterEditor::paintAnalyzer (juce::Graphics& g)
     if (isLogAxis())
     {
         for (float f : { 100.0f, 1000.0f, 10000.0f })
-            if (f < nyq)
+            if (f < axMax)
                 g.drawText (juce::String (f / 1000.0f, f < 1000.0f ? 1 : 0), juce::Rectangle<float> (freqToX (f) + 2.0f, 224.0f, 30.0f, 12.0f),
                             juce::Justification::centredLeft, false);
     }
     else
     {
-        for (float f = 5000.0f; f < nyq; f += 5000.0f)
+        for (float f = 5000.0f; f < axMax; f += 5000.0f)
             g.drawText (juce::String (f / 1000.0f, 0), juce::Rectangle<float> (freqToX (f) + 2.0f, 224.0f, 30.0f, 12.0f),
                         juce::Justification::centredLeft, false);
     }
@@ -476,12 +486,16 @@ void FreeFilterEditor::paint (juce::Graphics& g)
 
     // firma en la esquina inferior derecha
     {
-        const juce::Rectangle<float> sig { 250.0f, 392.0f, 196.0f, 18.0f };
+        const juce::Rectangle<float> sig { 250.0f, 388.0f, 196.0f, 16.0f };
         g.setFont (uiFont (12.0f, true));
         g.setColour (juce::Colours::black.withAlpha (0.45f));
         g.drawText ("Recomp by VooD", sig.translated (1.0f, 1.0f), juce::Justification::centredRight, false);
         g.setColour (juce::Colours::white.withAlpha (0.95f));
         g.drawText ("Recomp by VooD", sig, juce::Justification::centredRight, false);
+        g.setFont (uiFont (8.5f));
+        g.setColour (juce::Colours::white.withAlpha (0.7f));
+        g.drawText (juce::String ("v") + JucePlugin_VersionString,
+                    juce::Rectangle<float> (250.0f, 404.0f, 196.0f, 11.0f), juce::Justification::centredRight, false);
     }
 }
 
@@ -505,7 +519,56 @@ void FreeFilterEditor::paintAbout (juce::Graphics& g)
                       juce::Rectangle<int> (30, 80, designW - 60, 240), juce::Justification::centred, 12);
 
     g.setFont (uiFont (12.0f, true));
-    g.drawText ("Recomp by VooD", juce::Rectangle<float> (250.0f, 392.0f, 196.0f, 18.0f), juce::Justification::centredRight, false);
+    g.drawText ("Recomp by VooD", juce::Rectangle<float> (250.0f, 388.0f, 196.0f, 16.0f), juce::Justification::centredRight, false);
+    g.setFont (uiFont (8.5f));
+    g.drawText (juce::String ("v") + JucePlugin_VersionString,
+                juce::Rectangle<float> (250.0f, 404.0f, 196.0f, 11.0f), juce::Justification::centredRight, false);
+}
+
+//==============================================================================
+static juce::File curvesFolder()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("FreeFilter");
+    dir.createDirectory();
+    return dir;
+}
+
+void FreeFilterEditor::launchSave (bool dest)
+{
+    if (processor.learnedFrames (dest) <= 0)
+    {
+        setStatus (dest ? "Nothing learned in Dest. to save." : "Nothing learned in Source to save.");
+        return;
+    }
+    const juce::String side = dest ? "Dest" : "Source";
+    chooser = std::make_unique<juce::FileChooser> ("Save learned " + side + " curve",
+                                                   curvesFolder().getChildFile (side + " curve.ffcurve"), "*.ffcurve");
+    juce::Component::SafePointer<FreeFilterEditor> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                              | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [safe, dest, side] (const juce::FileChooser& fc)
+                          {
+                              if (safe == nullptr) return;
+                              auto f = fc.getResult();
+                              if (f == juce::File()) return;
+                              f = f.withFileExtension ("ffcurve");
+                              safe->setStatus (safe->processor.saveLearned (dest, f) ? side + " curve saved." : "Could not save the curve.");
+                          });
+}
+
+void FreeFilterEditor::launchLoad (bool dest)
+{
+    const juce::String side = dest ? "Dest" : "Source";
+    chooser = std::make_unique<juce::FileChooser> ("Load " + side + " curve", curvesFolder(), "*.ffcurve");
+    juce::Component::SafePointer<FreeFilterEditor> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [safe, dest, side] (const juce::FileChooser& fc)
+                          {
+                              if (safe == nullptr) return;
+                              auto f = fc.getResult();
+                              if (f == juce::File()) return;
+                              safe->setStatus (safe->processor.loadLearned (dest, f) ? side + " curve loaded." : "Not a valid FreeFilter curve.");
+                          });
 }
 
 //==============================================================================
@@ -595,6 +658,8 @@ void FreeFilterEditor::mouseDown (const juce::MouseEvent& e)
                 else if (auto* prm = processor.apvts.getParameter ("matchOn"))
                     prm->setValueNotifyingHost (prm->getValue() > 0.5f ? 0.0f : 1.0f);
                 break;
+            case Save: launchSave (processor.isLearnDest()); break;
+            case Load: launchLoad (processor.isLearnDest()); break;
             default: break;
         }
         repaint();

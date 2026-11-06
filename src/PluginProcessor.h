@@ -60,6 +60,10 @@ public:
 
     void requestReset();     // sliders a 0, aprendizaje borrado, Match y Learn desactivados
 
+    // Curvas aprendidas: guardar / cargar el lado indicado (true = Dest, false = Source) en un archivo .ffcurve
+    bool saveLearned (bool dest, const juce::File& file);
+    bool loadLearned (bool dest, const juce::File& file);
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -111,8 +115,16 @@ private:
     std::array<float, kRespPoints> respDb {};
     float respFHi = 20000.0f;
 
-    // aprendizaje
+    // aprendizaje (lo aprendido persiste entre parada/arranque y se guarda en el proyecto)
     ff::SpectrumLearner learnerEq, learnerTh;
+    juce::SpinLock learnLock;                 // protege sumas y contadores frente al hilo de mensajes
+    std::atomic<uint32_t> dataVersion { 0 };
+    uint32_t lastDataVersion = 0;
+    double lastLearnSr = 0.0;
+    juce::ValueTree makeLearnedTree();
+    void readLearnedTree (const juce::ValueTree& t);
+    bool exportSide (bool dest, std::vector<double>& eq, std::vector<double>& th, int& framesEq, int& framesTh);
+    void importSide (bool dest, const std::vector<double>& eq, const std::vector<double>& th, int framesEq, int framesTh);
     std::atomic<int> framesDest { 0 }, framesSource { 0 };
     std::vector<double> snapDest, snapSource;     // medias fijadas al activar Match
     juce::SpinLock snapLock;

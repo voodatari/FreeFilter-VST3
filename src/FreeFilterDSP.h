@@ -242,8 +242,13 @@ public:
     }
     void reset()
     {
-        std::fill (ring.begin(), ring.end(), 0.0f);
+        resetRing();
         clearAll();
+    }
+    // Reinicia solo el anillo de muestras (p. ej. al parar/arrancar la reproduccion); NO borra lo aprendido.
+    void resetRing()
+    {
+        std::fill (ring.begin(), ring.end(), 0.0f);
         sinceFrame = 0; pos = 0;
     }
     void clearAll() { clear (Dest); clear (Source); }
@@ -255,15 +260,39 @@ public:
     }
     void setTarget (Target t) { target = t; }
 
-    // Entra una muestra (mono: media de canales). Devuelve true si se completo un bloque.
-    bool push (float x)
+    // Entra una muestra. Devuelve true si se completo un bloque (sin analizarlo todavia).
+    bool advance (float x)
     {
         ring[(size_t) pos] = x;
         pos = (pos + 1) % N;
         if (++sinceFrame < H) return false;
         sinceFrame = 0;
-        if (target != None) analyse();
         return true;
+    }
+    // Analiza el ultimo bloque completo y lo acumula en el destino activo.
+    void analyseFrame()
+    {
+        if (target == None) return;
+        for (int i = 0; i < N; ++i) scratch[(size_t) i] = ring[(size_t) ((pos + i) % N)];
+        fft (scratch, false);
+        auto& s = target == Dest ? sumA : sumB;
+        for (int k = 0; k <= N / 2; ++k) s[(size_t) k] += std::norm (scratch[(size_t) k]);
+        ++(target == Dest ? countA : countB);
+    }
+    // Entra una muestra y analiza el bloque si se completa (uso en tests y en un solo hilo).
+    bool push (float x)
+    {
+        const bool ready = advance (x);
+        if (ready) analyseFrame();
+        return ready;
+    }
+    // Sustituye lo aprendido por un espectro medio guardado (dst/src con N/2+1 elementos).
+    void importAverage (Target t, const double* avg, int frameCount)
+    {
+        auto& s = t == Dest ? sumA : sumB;
+        const int c = std::max (frameCount, 1);
+        for (size_t k = 0; k < s.size(); ++k) s[k] = avg[k] * c;
+        (t == Dest ? countA : countB) = c;
     }
     int frames (Target t) const { return t == Dest ? countA : countB; }
     // Espectro de potencia medio por bloque
@@ -282,15 +311,6 @@ public:
     }
 
 private:
-    void analyse()
-    {
-        for (int i = 0; i < N; ++i) scratch[(size_t) i] = ring[(size_t) ((pos + i) % N)];
-        fft (scratch, false);
-        auto& s = target == Dest ? sumA : sumB;
-        for (int k = 0; k <= N / 2; ++k) s[(size_t) k] += std::norm (scratch[(size_t) k]);
-        ++(target == Dest ? countA : countB);
-    }
-
     int N = 1024, H = 768, pos = 0, sinceFrame = 0, countA = 0, countB = 0;
     Target target = None;
     std::vector<float> ring;
